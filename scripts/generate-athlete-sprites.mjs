@@ -12,8 +12,9 @@
  *
  * Output (under --out, default scripts/_gen/output/):
  *   portraits/athlete_<NN>.png   - 64x40 headshot crop (walk-south frame 0)
- *   tokens/athlete_<NN>_blue.png - 64x64 standing frame, blue jersey
- *   tokens/athlete_<NN>_red.png  - 64x64 standing frame, red jersey
+ *   tokens/athlete_<NN>_blue.png - 576x64 walk-south cycle strip (9 frames,
+ *                                  64px each), blue jersey
+ *   tokens/athlete_<NN>_red.png  - same, red jersey
  *   pool.json                   - identity metadata (gender/skin/hair/id)
  *   CREDITS.txt                 - required attribution for every asset used
  *     (LPC licenses require this - see README.md's Licensing section)
@@ -37,10 +38,12 @@ const OUT_DIR =
 
 // LPC "universal" layout (tools/layout/universal.json): 64x64 frames, walk
 // row for direction "s" (facing camera) is row 10 (0-indexed: 0-3 cast
-// n/w/s/e, 4-7 thrust n/w/s/e, 8-11 walk n/w/s/e). Frame 0 of that row is a
-// standing/front pose - used for both crops below.
+// n/w/s/e, 4-7 thrust n/w/s/e, 8-11 walk n/w/s/e), 9 frames wide (frame 0 is
+// the standing/front pose - used for the portrait crop and as the idle pose
+// in-game, see PlayerSprites.gd/FieldUnit.gd).
 const FRAME = 64;
 const WALK_S_ROW = 10;
+const WALK_FRAME_COUNT = 9;
 const FRAME_Y = WALK_S_ROW * FRAME;
 const PORTRAIT_HEIGHT = 40; // headshot crop: top portion of the 64px frame
 
@@ -168,23 +171,26 @@ async function main() {
       for (const jersey of ["blue", "red"]) {
         const selections = buildSelections(identity, jersey);
         const result = await page.evaluate(
-          async ({ selections, bodyType, frameY, frameSize, portraitHeight }) => {
+          async ({ selections, bodyType, frameY, frameSize, frameCount, portraitHeight }) => {
             const renderer = window.canvasRenderer;
             await renderer.renderCharacter(selections, bodyType);
             const src = renderer.canvas;
 
-            function cropToDataUrl(sy, sh) {
+            function cropToDataUrl(sx, sy, sw, sh) {
               const c = document.createElement("canvas");
-              c.width = frameSize;
+              c.width = sw;
               c.height = sh;
               const ctx = c.getContext("2d");
               ctx.imageSmoothingEnabled = false;
-              ctx.drawImage(src, 0, sy, frameSize, sh, 0, 0, frameSize, sh);
+              ctx.drawImage(src, sx, sy, sw, sh, 0, 0, sw, sh);
               return c.toDataURL("image/png");
             }
 
-            const tokenDataUrl = cropToDataUrl(frameY, frameSize);
-            const portraitDataUrl = cropToDataUrl(frameY, portraitHeight);
+            // Full walk-south cycle strip (frameCount frames side by side,
+            // left to right in animation order) - Godot slices this into
+            // individual frames at runtime (see PlayerSprites.gd).
+            const tokenDataUrl = cropToDataUrl(0, frameY, frameSize * frameCount, frameSize);
+            const portraitDataUrl = cropToDataUrl(0, frameY, frameSize, portraitHeight);
 
             const jsonMod = await import("/sources/state/json.ts");
             const creditsMod = await import("/sources/utils/credits.ts");
@@ -193,7 +199,14 @@ async function main() {
             void jsonMod;
             return { tokenDataUrl, portraitDataUrl, credits };
           },
-          { selections, bodyType: identity.gender, frameY: FRAME_Y, frameSize: FRAME, portraitHeight: PORTRAIT_HEIGHT },
+          {
+            selections,
+            bodyType: identity.gender,
+            frameY: FRAME_Y,
+            frameSize: FRAME,
+            frameCount: WALK_FRAME_COUNT,
+            portraitHeight: PORTRAIT_HEIGHT,
+          },
         );
 
         writeFileSync(
