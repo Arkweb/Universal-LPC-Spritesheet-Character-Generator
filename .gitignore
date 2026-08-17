@@ -13,3 +13,8 @@ computed-style-diff-output/
 **/__screenshots__/
 /.vitest-attachments/
 .tool-versions
+
+# Scratch output of scripts/generate-athlete-sprites.mjs (default --out) -
+# generated PNGs get copied into the consuming game repo
+# (ultimate-frisbee/assets/lpc_sprites/), never meant to live here too.
+scripts/_gen/
