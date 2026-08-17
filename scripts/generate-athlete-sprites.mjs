@@ -11,13 +11,23 @@
  * Usage: node scripts/generate-athlete-sprites.mjs [--out <dir>]
  *
  * Output (under --out, default scripts/_gen/output/):
- *   portraits/athlete_<NN>.png   - 64x40 headshot crop (walk-south frame 0)
- *   tokens/athlete_<NN>_blue.png - 576x64 walk-south cycle strip (9 frames,
- *                                  64px each), blue jersey
- *   tokens/athlete_<NN>_red.png  - same, red jersey
- *   pool.json                   - identity metadata (gender/skin/hair/id)
- *   CREDITS.txt                 - required attribution for every asset used
- *     (LPC licenses require this - see README.md's Licensing section)
+ *   portraits/athlete_<NN>.png            - 64x40 headshot crop (walk-south
+ *                                            frame 0)
+ *   tokens/athlete_<NN>_blue_{n,s,w}.png  - 576x64 walk cycle strip (9
+ *                                           frames, 64px each) per real LPC
+ *                                           direction, blue jersey - "e" is
+ *                                           deliberately not rendered, the
+ *                                           game mirrors "w" for that (see
+ *                                           ultimate-frisbee/scripts/data/
+ *                                           PlayerSprites.gd) since the LPC
+ *                                           universal layout only has 4 real
+ *                                           directions to begin with.
+ *   tokens/athlete_<NN>_red_{n,s,w}.png   - same, red jersey
+ *   pool.json                             - identity metadata (gender/skin/
+ *                                           hair/id)
+ *   CREDITS.txt                           - required attribution for every
+ *     asset used (LPC licenses require this - see README.md's Licensing
+ *     section)
  */
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -37,14 +47,16 @@ const OUT_DIR =
     : path.join(__dirname, "_gen", "output");
 
 // LPC "universal" layout (tools/layout/universal.json): 64x64 frames, walk
-// row for direction "s" (facing camera) is row 10 (0-indexed: 0-3 cast
-// n/w/s/e, 4-7 thrust n/w/s/e, 8-11 walk n/w/s/e), 9 frames wide (frame 0 is
-// the standing/front pose - used for the portrait crop and as the idle pose
-// in-game, see PlayerSprites.gd/FieldUnit.gd).
+// rows are 8-11 (0-indexed: 0-3 cast n/w/s/e, 4-7 thrust n/w/s/e, 8-11 walk
+// n/w/s/e), 9 frames wide (frame 0 is the standing/front pose - used for the
+// portrait crop and as the idle pose in-game, see
+// PlayerSprites.gd/FieldUnit.gd). Only n/w/s are exported - "e" is the same
+// distance from the universal layout's actual content as the others, but
+// the game mirrors "w" for it instead of doubling render+storage cost for a
+// frame that's a pure horizontal flip of one already generated.
 const FRAME = 64;
-const WALK_S_ROW = 10;
+const WALK_ROWS = { n: 8, w: 9, s: 10 };
 const WALK_FRAME_COUNT = 9;
-const FRAME_Y = WALK_S_ROW * FRAME;
 const PORTRAIT_HEIGHT = 40; // headshot crop: top portion of the 64px frame
 
 // Skin tones, hair styles/colors: plain (non-lpcr) LPC palette entries -
@@ -165,13 +177,14 @@ async function main() {
     const allCreditsAccum = [];
 
     for (const identity of pool) {
-      // Portrait + blue-jersey match token share one render (see FRAME_Y
-      // crop below); red-jersey token is a second render (only the jersey
-      // recolor differs).
+      // Portrait + blue-jersey match tokens share one render (see the
+      // per-direction crops below, all read from the same canvas);
+      // red-jersey tokens are a second render (only the jersey recolor
+      // differs).
       for (const jersey of ["blue", "red"]) {
         const selections = buildSelections(identity, jersey);
         const result = await page.evaluate(
-          async ({ selections, bodyType, frameY, frameSize, frameCount, portraitHeight }) => {
+          async ({ selections, bodyType, walkRows, frameSize, frameCount, portraitHeight }) => {
             const renderer = window.canvasRenderer;
             await renderer.renderCharacter(selections, bodyType);
             const src = renderer.canvas;
@@ -186,33 +199,40 @@ async function main() {
               return c.toDataURL("image/png");
             }
 
-            // Full walk-south cycle strip (frameCount frames side by side,
-            // left to right in animation order) - Godot slices this into
-            // individual frames at runtime (see PlayerSprites.gd).
-            const tokenDataUrl = cropToDataUrl(0, frameY, frameSize * frameCount, frameSize);
-            const portraitDataUrl = cropToDataUrl(0, frameY, frameSize, portraitHeight);
+            // One full walk cycle strip per real direction (frameCount
+            // frames side by side, left to right in animation order) -
+            // Godot slices each into individual frames at runtime (see
+            // PlayerSprites.gd). Portrait stays south-only (frame 0, the
+            // standing/front pose) regardless of jersey/direction loop.
+            const tokenDataUrls = {};
+            for (const [dir, row] of Object.entries(walkRows)) {
+              tokenDataUrls[dir] = cropToDataUrl(0, row * frameSize, frameSize * frameCount, frameSize);
+            }
+            const portraitDataUrl = cropToDataUrl(0, walkRows.s * frameSize, frameSize, portraitHeight);
 
             const jsonMod = await import("/sources/state/json.ts");
             const creditsMod = await import("/sources/utils/credits.ts");
             const catalogMod = await import("/sources/state/catalog.ts");
             const credits = creditsMod.getAllCredits(catalogMod.defaultCatalog, selections, bodyType);
             void jsonMod;
-            return { tokenDataUrl, portraitDataUrl, credits };
+            return { tokenDataUrls, portraitDataUrl, credits };
           },
           {
             selections,
             bodyType: identity.gender,
-            frameY: FRAME_Y,
+            walkRows: WALK_ROWS,
             frameSize: FRAME,
             frameCount: WALK_FRAME_COUNT,
             portraitHeight: PORTRAIT_HEIGHT,
           },
         );
 
-        writeFileSync(
-          path.join(OUT_DIR, "tokens", `${identity.id}_${jersey}.png`),
-          dataUrlToBuffer(result.tokenDataUrl),
-        );
+        for (const [dir, dataUrl] of Object.entries(result.tokenDataUrls)) {
+          writeFileSync(
+            path.join(OUT_DIR, "tokens", `${identity.id}_${jersey}_${dir}.png`),
+            dataUrlToBuffer(dataUrl),
+          );
+        }
         if (jersey === "blue") {
           writeFileSync(
             path.join(OUT_DIR, "portraits", `${identity.id}.png`),
